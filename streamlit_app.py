@@ -1,11 +1,10 @@
 import streamlit as st
 import pdfplumber
 from PIL import Image
-from pydub import AudioSegment
 import pytesseract
-import openai
 from docx import Document
 import os
+import openai
 
 # -----------------------
 # APP SETTINGS
@@ -18,10 +17,10 @@ st.set_page_config(
 
 st.markdown("""
 # RydenNet – Behavioural & Intelligence AI
-Upload files to extract text, analyze content, and generate intelligence.
+Upload files to extract text, analyze content, and interact with the intelligence assistant.
 """)
 
-# Sidebar upload
+# Sidebar for uploads
 with st.sidebar:
     st.subheader("Upload your files")
     uploaded_files = st.file_uploader(
@@ -29,8 +28,6 @@ with st.sidebar:
         accept_multiple_files=True,
         type=["pdf", "png", "jpg", "jpeg", "mp3", "wav", "docx"]
     )
-
-    search_query = st.text_input("Search for names, emails, phone numbers...")
 
 # -----------------------
 # FUNCTIONS
@@ -58,49 +55,47 @@ def extract_text(file):
     
     return text_content
 
-def generate_intelligence(text):
-    # Lightweight example using OpenAI (requires OPENAI_API_KEY)
-    if not text.strip():
-        return "No extractable text available."
-    
+def chatgpt_query(prompt_text):
     try:
         openai.api_key = os.getenv("OPENAI_API_KEY")
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are an intelligence agent analyzing text for behavioural, financial, and credibility information."},
-                {"role": "user", "content": text}
+                {"role": "system", "content": "You are RydenNet, an AI intelligence analyst. Extract insights, behavioral patterns, fraud signals, and credibility notes from text."},
+                {"role": "user", "content": prompt_text}
             ],
             temperature=0.2,
-            max_tokens=300
+            max_tokens=400
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"[Intelligence generation failed: {e}]"
+        return f"[ChatGPT query failed: {e}]"
 
 # -----------------------
 # PROCESS FILES
 # -----------------------
+all_text_content = ""
 if uploaded_files:
     st.subheader("Uploaded Files & Extracted Text")
-    
     for file in uploaded_files:
         st.markdown(f"### {file.name}")
         text_content = extract_text(file)
         st.text_area("Extracted Text", text_content, height=200)
-        
-        st.subheader("Generated Intelligence")
-        intelligence = generate_intelligence(text_content)
-        st.write(intelligence)
+        all_text_content += "\n" + text_content
 
 # -----------------------
-# SEARCH FUNCTIONALITY
+# SEARCH & CHATGPT INTERACTION
 # -----------------------
-if search_query and uploaded_files:
-    st.subheader(f"Search results for '{search_query}'")
-    for file in uploaded_files:
-        text_content = extract_text(file)
-        if search_query.lower() in text_content.lower():
-            st.markdown(f"- Found in **{file.name}**")
-        else:
-            st.markdown(f"- Not found in **{file.name}**")
+st.subheader("Search / Ask Intelligence Agent")
+
+search_query = st.text_input("Type a query, name, email, phone, or instruction for RydenNet:")
+
+if st.button("Submit Query") and search_query:
+    if all_text_content:
+        # Combine uploaded text with user query for context
+        prompt = f"Analyze the following text and respond to the query.\n\nText:\n{all_text_content}\n\nQuery: {search_query}"
+        result = chatgpt_query(prompt)
+        st.markdown("### RydenNet Response")
+        st.write(result)
+    else:
+        st.warning("Please upload files first to give RydenNet content to analyze.")
