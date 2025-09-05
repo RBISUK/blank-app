@@ -1,104 +1,106 @@
 import streamlit as st
-from PIL import Image
-import pytesseract
 import pdfplumber
-import re
-import os
-import openai
+from PIL import Image
 from pydub import AudioSegment
-import io
+import pytesseract
+import openai
+from docx import Document
+import os
 
-st.set_page_config(page_title="RydenNet", layout="wide")
+# -----------------------
+# APP SETTINGS
+# -----------------------
+st.set_page_config(
+    page_title="RydenNet Intelligence Suite",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# UI styling
 st.markdown("""
-    <style>
-        .stApp {background-color: #ffffff; color: #000000;}
-        .stSidebar .sidebar-content {background-color: #f0f0f0; color: #000000;}
-        .stButton>button {background-color: #006400; color:white;}
-    </style>
-""", unsafe_allow_html=True)
+# RydenNet – Behavioural & Intelligence AI
+Upload files to extract text, analyze content, and generate intelligence.
+""")
 
-# OpenAI API key
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-if OPENAI_KEY:
-    openai.api_key = OPENAI_KEY
-else:
-    st.sidebar.warning("⚠️ Set OPENAI_API_KEY environment variable.")
-
-# File upload
-uploaded_files = st.sidebar.file_uploader("Upload PDF/Images/Audio", accept_multiple_files=True,
-                                          type=['pdf','png','jpg','jpeg','mp3','wav','opus'])
-
-search_query = st.sidebar.text_input("Search Text/Entities")
-
-data_store = []
-
-def extract_text(file):
-    try:
-        if file.name.lower().endswith((".png",".jpg",".jpeg")):
-            img = Image.open(file)
-            text = pytesseract.image_to_string(img)
-            return text
-        elif file.name.lower().endswith(".pdf"):
-            text = ""
-            with pdfplumber.open(file) as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() + "\n"
-            return text
-        elif file.name.lower().endswith((".mp3",".wav",".opus")):
-            # Convert audio to wav in-memory
-            try:
-                audio = AudioSegment.from_file(file)
-                buf = io.BytesIO()
-                audio.export(buf, format="wav")
-                buf.seek(0)
-                return "Audio transcription placeholder (Whisper to be added)"
-            except FileNotFoundError:
-                return "⚠️ Audio processing failed: ffmpeg not found"
-    except Exception as e:
-        return f"⚠️ Failed to extract text: {e}"
-    return ""
-
-def extract_entities(text):
-    return {
-        "Names": re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\b', text),
-        "Emails": re.findall(r'[\w\.-]+@[\w\.-]+', text),
-        "Phones": re.findall(r'(?:\+44\s?|0)\d{10,11}', text),
-        "Dates": re.findall(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', text),
-        "Amounts": re.findall(r'£\d+(?:\.\d+)?', text)
-    }
-
-def generate_ai_insights(text):
-    if not OPENAI_KEY:
-        return "OpenAI key missing"
-    prompt = f"Analyze for behavioral, credibility, and fraud insights:\n{text}"
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role":"user","content":prompt}],
-        temperature=0
+# Sidebar upload
+with st.sidebar:
+    st.subheader("Upload your files")
+    uploaded_files = st.file_uploader(
+        "PDF, DOCX, Images, Audio (MP3/WAV)",
+        accept_multiple_files=True,
+        type=["pdf", "png", "jpg", "jpeg", "mp3", "wav", "docx"]
     )
-    return response['choices'][0]['message']['content']
 
-# Process uploads
+    search_query = st.text_input("Search for names, emails, phone numbers...")
+
+# -----------------------
+# FUNCTIONS
+# -----------------------
+def extract_text(file):
+    ext = file.name.split('.')[-1].lower()
+    text_content = ""
+    
+    try:
+        if ext == "pdf":
+            with pdfplumber.open(file) as pdf:
+                text_content = "\n".join([page.extract_text() or "" for page in pdf.pages])
+        elif ext in ["png", "jpg", "jpeg"]:
+            img = Image.open(file)
+            text_content = pytesseract.image_to_string(img)
+        elif ext == "docx":
+            doc = Document(file)
+            text_content = "\n".join([p.text for p in doc.paragraphs])
+        elif ext in ["mp3", "wav"]:
+            text_content = "[Audio uploaded – transcription module only works locally]"
+        else:
+            text_content = "[Unsupported file type]"
+    except Exception as e:
+        text_content = f"[Error extracting text: {e}]"
+    
+    return text_content
+
+def generate_intelligence(text):
+    # Lightweight example using OpenAI (requires OPENAI_API_KEY)
+    if not text.strip():
+        return "No extractable text available."
+    
+    try:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an intelligence agent analyzing text for behavioural, financial, and credibility information."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.2,
+            max_tokens=300
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"[Intelligence generation failed: {e}]"
+
+# -----------------------
+# PROCESS FILES
+# -----------------------
 if uploaded_files:
+    st.subheader("Uploaded Files & Extracted Text")
+    
+    for file in uploaded_files:
+        st.markdown(f"### {file.name}")
+        text_content = extract_text(file)
+        st.text_area("Extracted Text", text_content, height=200)
+        
+        st.subheader("Generated Intelligence")
+        intelligence = generate_intelligence(text_content)
+        st.write(intelligence)
+
+# -----------------------
+# SEARCH FUNCTIONALITY
+# -----------------------
+if search_query and uploaded_files:
+    st.subheader(f"Search results for '{search_query}'")
     for file in uploaded_files:
         text_content = extract_text(file)
-        entities = extract_entities(text_content)
-        insights = generate_ai_insights(text_content)
-        data_store.append({'filename': file.name, 'text': text_content, 'entities': entities, 'insights': insights})
-
-# Display
-st.title("RydenNet – Behavioural & Intelligence AI")
-if data_store:
-    for item in data_store:
-        st.subheader(item['filename'])
-        st.text_area("Extracted Text", value=item['text'][:500]+"...", height=150)
-        st.write("Entities:", item['entities'])
-        st.text_area("Intelligence Insights", value=item['insights'], height=150)
-        if search_query:
-            matches = [line for line in item['text'].splitlines() if search_query.lower() in line.lower()]
-            if matches:
-                st.write("Search Matches:", matches)
-else:
-    st.info("Upload files via the sidebar to begin analysis.")
+        if search_query.lower() in text_content.lower():
+            st.markdown(f"- Found in **{file.name}**")
+        else:
+            st.markdown(f"- Not found in **{file.name}**")
