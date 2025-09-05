@@ -1,16 +1,15 @@
 import streamlit as st
 import pdfplumber
 import docx
-import easyocr
 import tempfile
 import os
 import re
+from textblob import TextBlob
 import pandas as pd
 import openai
-from textblob import TextBlob
 
 # -------------------------------
-# APP CONFIG
+# PAGE CONFIG
 # -------------------------------
 st.set_page_config(
     page_title="🕵️ RydenNet – Behavioural & Intelligence AI Cockpit",
@@ -21,9 +20,19 @@ st.set_page_config(
 st.title("🕵️‍♂️ RydenNet – Behavioural & Intelligence AI Cockpit")
 st.markdown("Upload files, analyze content, extract entities, and generate intelligence.")
 
+# -------------------------------
+# SIDEBAR UPLOAD & SEARCH
+# -------------------------------
+st.sidebar.header("📂 Upload & Search")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload files",
+    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
+    accept_multiple_files=True
+)
+search_query = st.sidebar.text_input("🔎 Search entities")
 
 # -------------------------------
-# FILE PROCESSING
+# FUNCTION: EXTRACT TEXT
 # -------------------------------
 def extract_text(file):
     text = ""
@@ -36,6 +45,7 @@ def extract_text(file):
         for para in doc.paragraphs:
             text += para.text + "\n"
     elif file.name.lower().endswith((".png", ".jpg", ".jpeg")):
+        import easyocr
         reader = easyocr.Reader(["en"], gpu=False)
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
             tmp.write(file.read())
@@ -47,14 +57,14 @@ def extract_text(file):
         text = transcribe_audio(file)
     return text
 
-
 # -------------------------------
-# AUDIO TRANSCRIPTION
+# FUNCTION: AUDIO TRANSCRIPTION
 # -------------------------------
 def transcribe_audio(file):
     try:
         import whisper
-        model = whisper.load_model("base")
+        with st.spinner("Loading Whisper model..."):
+            model = whisper.load_model("base")
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
             tmp.write(file.read())
             tmp_path = tmp.name
@@ -72,9 +82,8 @@ def transcribe_audio(file):
         except Exception as e2:
             return f"⚠️ Audio transcription failed: {e2}"
 
-
 # -------------------------------
-# ENTITY EXTRACTION + CATEGORISATION
+# FUNCTION: EXTRACT ENTITIES
 # -------------------------------
 def extract_entities(text):
     dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
@@ -92,9 +101,8 @@ def extract_entities(text):
         "Contacts": emails + phones
     }
 
-
 # -------------------------------
-# BEHAVIOURAL ANALYSIS
+# FUNCTION: BEHAVIOURAL SCORE
 # -------------------------------
 def behavioural_score(text):
     try:
@@ -105,21 +113,8 @@ def behavioural_score(text):
     except Exception as e:
         return 0, f"⚠️ Behavioural analysis failed: {e}"
 
-
 # -------------------------------
-# SIDEBAR
-# -------------------------------
-st.sidebar.header("📂 Upload & Search")
-uploaded_files = st.sidebar.file_uploader(
-    "Upload files",
-    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
-    accept_multiple_files=True
-)
-search_query = st.sidebar.text_input("🔎 Search entities")
-
-
-# -------------------------------
-# MAIN INTELLIGENCE ENGINE
+# MAIN DASHBOARD
 # -------------------------------
 if uploaded_files:
     for file in uploaded_files:
@@ -133,15 +128,15 @@ if uploaded_files:
         entities = extract_entities(text_content)
         behaviour, behaviour_summary = behavioural_score(text_content)
 
-        # Search filter
+        # SEARCH FILTER
         if search_query:
             if search_query.lower() not in text_content.lower():
                 st.info(f"Search term '{search_query}' not found in {file.name}.")
                 continue
 
-        # Display report
+        # DISPLAY REPORT
         with st.expander("📜 Full Transcript / Extracted Text", expanded=False):
-            st.text_area("Extracted Text", text_content, height=200)
+            st.text_area("Extracted Text", text_content, height=250)
 
         col1, col2 = st.columns(2)
 
