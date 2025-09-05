@@ -1,181 +1,149 @@
 import streamlit as st
-from PIL import Image
-import easyocr
 import pdfplumber
-import re
-import openai
-import spacy
-from pydub import AudioSegment
+import docx
+import os
 import tempfile
+import openai
+import re
+import easyocr
+from PIL import Image
+import whisper
+import pandas as pd
 
-# --------------------
-# Config
-# --------------------
+# -------------------------------
+# CONFIG
+# -------------------------------
 st.set_page_config(
-    page_title="RydenNet Intelligence Cockpit",
+    page_title="RydenNet – Master AI",
     layout="wide",
-    page_icon="🤖"
+    initial_sidebar_state="expanded"
 )
-st.markdown("<h1 style='text-align:center'>RydenNet – Behavioural & Intelligence AI</h1>", unsafe_allow_html=True)
 
-# OpenAI key
-openai.api_key = st.secrets.get("OPENAI_API_KEY")
+st.title("🕵️‍♂️ RydenNet – Behavioural & Intelligence AI Cockpit")
 
-# --------------------
-# Sidebar
-# --------------------
-st.sidebar.title("RydenNet Control Panel")
+# Sidebar Upload
+st.sidebar.header("📂 Upload Files")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload files", 
-    type=["pdf","png","jpg","jpeg","mp3","wav","opus"], 
+    "Upload PDFs, Word docs, Images, or Audio",
+    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
     accept_multiple_files=True
 )
-search_query = st.sidebar.text_input("Search intelligence...")
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Logs:**")
-terminal_logs = []
 
-# --------------------
-# OCR & PDF text extraction
-# --------------------
-reader = easyocr.Reader(['en'])
-nlp = spacy.load("en_core_web_sm")
+# Whisper model for audio
+@st.cache_resource
+def load_whisper():
+    return whisper.load_model("base")
 
+whisper_model = load_whisper()
+
+# EasyOCR
+reader = easyocr.Reader(["en"])
+
+# -------------------------------
+# TEXT EXTRACTION
+# -------------------------------
 def extract_text(file):
-    try:
-        if file.name.lower().endswith((".png", ".jpg", ".jpeg")):
-            img = Image.open(file)
-            text = " ".join(reader.readtext(file, detail=0))
-        elif file.name.lower().endswith(".pdf"):
-            text = ""
-            with pdfplumber.open(file) as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() + "\n"
-        elif file.name.lower().endswith((".mp3", ".wav", ".opus")):
-            text = f"[Audio file '{file.name}' ready for transcription module]"
-        else:
-            text = ""
-        terminal_logs.append(f"Extracted text from {file.name}")
-        return text
-    except Exception as e:
-        terminal_logs.append(f"Failed to extract from {file.name}: {e}")
-        return ""
+    text = ""
+    if file.name.endswith(".pdf"):
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                text += page.extract_text() + "\n"
+    elif file.name.endswith(".docx"):
+        doc = docx.Document(file)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+    elif file.name.endswith((".png", ".jpg", ".jpeg")):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            tmp.write(file.read())
+            tmp_path = tmp.name
+        text = " ".join(reader.readtext(tmp_path, detail=0))
+        os.remove(tmp_path)
+    elif file.name.endswith((".mp3", ".wav", ".opus")):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
+            tmp.write(file.read())
+            tmp_path = tmp.name
+        result = whisper_model.transcribe(tmp_path)
+        text = result["text"]
+        os.remove(tmp_path)
+    return text.strip()
 
-# --------------------
-# Behavioural & credibility analysis
-# --------------------
+# -------------------------------
+# ENTITY EXTRACTION
+# -------------------------------
+def extract_entities(text):
+    dates = re.findall(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", text)
+    amounts = re.findall(r"£\d+(?:,\d{3})*(?:\.\d{2})?", text)
+    emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    phones = re.findall(r"\+?\d[\d\-\s]{7,}\d", text)
+    names = re.findall(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", text)
+    return dates, amounts, names, emails, phones
+
+# -------------------------------
+# BEHAVIOURAL & CREDIBILITY AI
+# -------------------------------
 def behavioural_analysis(text):
     prompt = f"""
-    You are an expert behavioural intelligence analyst.
-    Analyze the following text for credibility, exaggeration, contradictions, hedging, suspicious statements.
-    Return results as concise bullet points.
-    {text}
+    You are a behavioural intelligence analyst. 
+    Analyse the following text for:
+    - Emotional tone
+    - Credibility markers
+    - Signs of exaggeration or manipulation
+    - Overall behavioural risk score (0–100)
+
+    Text:
+    {text[:2000]}  # limit text
     """
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role":"system","content":"You are a behavioural intelligence analyst."},
-                {"role":"user","content":prompt}
+                {"role": "system", "content": "You are an expert in behavioural analysis."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0,
-            max_tokens=500
+            temperature=0.2,
+            max_tokens=400
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        terminal_logs.append(f"Behavioural analysis failed: {e}")
-        return f"Behavioural analysis failed: {e}"
+        return f"⚠️ Behavioural analysis failed: {e}"
 
-# --------------------
-# Text classification / entity extraction
-# --------------------
-def classify_text_entities(text):
-    doc = nlp(text)
-    names, places, orgs, dates, amounts, emails, phones = [], [], [], [], [], [], []
-
-    for ent in doc.ents:
-        if ent.label_ == "PERSON": names.append(ent.text)
-        elif ent.label_ in ["GPE","LOC"]: places.append(ent.text)
-        elif ent.label_ == "ORG": orgs.append(ent.text)
-        elif ent.label_ in ["DATE","TIME"]: dates.append(ent.text)
-        elif ent.label_ == "MONEY": amounts.append(ent.text)
-
-    emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
-    phones = re.findall(r"\+?\d[\d -]{7,}\d", text)
-
-    return {
-        "names": list(set(names)),
-        "places": list(set(places)),
-        "orgs": list(set(orgs)),
-        "dates": list(set(dates)),
-        "amounts": list(set(amounts)),
-        "emails": list(set(emails)),
-        "phones": list(set(phones))
-    }
-
-# --------------------
-# Process uploads
-# --------------------
-intelligence_data = []
-
+# -------------------------------
+# MAIN UI
+# -------------------------------
 if uploaded_files:
     for file in uploaded_files:
+        st.subheader(f"📄 File: {file.name}")
         text_content = extract_text(file)
-        if text_content:
-            entities = classify_text_entities(text_content)
-            behaviour = behavioural_analysis(text_content)
-            intelligence_data.append({
-                "file": file.name,
-                "text": text_content,
-                "behaviour": behaviour,
-                **entities
-            })
 
-# --------------------
-# Search function
-# --------------------
-def search_intelligence(query, data_list):
-    results = []
-    query_lower = query.lower()
-    for data in data_list:
-        combined_text = " ".join([
-            data['text'],
-            " ".join(data['names']),
-            " ".join(data['places']),
-            " ".join(data['orgs']),
-            " ".join(data['dates']),
-            " ".join(data['amounts']),
-            " ".join(data['emails']),
-            " ".join(data['phones'])
-        ]).lower()
-        if query_lower in combined_text:
-            results.append(data)
-    return results
+        if not text_content:
+            st.warning("No text could be extracted.")
+            continue
 
-if search_query:
-    intelligence_data = search_intelligence(search_query, intelligence_data)
-    st.sidebar.markdown(f"**{len(intelligence_data)} results found for '{search_query}'**")
+        st.markdown("### 🔎 Extracted Text")
+        st.text_area("Raw Content", text_content[:3000], height=200)
 
-# --------------------
-# Display intelligence
-# --------------------
-for data in intelligence_data:
-    st.markdown(f"### File: {data['file']}")
-    st.markdown(f"**Behavioural & Credibility Analysis:**\n{data['behaviour']}")
-    st.write("**Entities:**")
-    st.write(f"Names: {data['names']}")
-    st.write(f"Places: {data['places']}")
-    st.write(f"Organisations: {data['orgs']}")
-    st.write(f"Dates: {data['dates']}")
-    st.write(f"Amounts: {data['amounts']}")
-    st.write(f"Emails: {data['emails']}")
-    st.write(f"Phones: {data['phones']}")
-    st.markdown("---")
+        # Entities
+        dates, amounts, names, emails, phones = extract_entities(text_content)
 
-# --------------------
-# Sidebar logs
-# --------------------
-st.sidebar.subheader("RydenNet Logs")
-for line in terminal_logs[-20:]:
-    st.sidebar.markdown(f"`{line}`")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**📅 Dates:**")
+            st.write(dates if dates else "None")
+            st.markdown("**💷 Amounts:**")
+            st.write(amounts if amounts else "None")
+        with col2:
+            st.markdown("**👤 Names:**")
+            st.write(names if names else "None")
+        with col3:
+            st.markdown("**📧 Emails:**")
+            st.write(emails if emails else "None")
+            st.markdown("**📞 Phones:**")
+            st.write(phones if phones else "None")
 
+        # Behavioural Intelligence
+        st.markdown("### 🧠 Behavioural & Credibility Analysis")
+        behavioural = behavioural_analysis(text_content)
+        st.write(behavioural)
+
+else:
+    st.info("Upload files from the sidebar to begin.")
