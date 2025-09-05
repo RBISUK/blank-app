@@ -7,5 +7,6 @@ pydub
 librosa
 matplotlib
 numpy
-openai
+openai>=1.0.0
+spacy
 ffmpeg-python
