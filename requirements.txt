@@ -4,3 +4,5 @@ Pillow
 torch
 torchvision
 torchaudio
+pdfplumber
+pdf2image
