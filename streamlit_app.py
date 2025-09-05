@@ -3,17 +3,19 @@ from PIL import Image
 import easyocr
 import pdfplumber
 from pdf2image import convert_from_bytes
-from fpdf import FPDF
-from datetime import datetime
-import os
-import re
-import numpy as np
 from pydub import AudioSegment
 import tempfile
 import librosa
+import whisper
+import matplotlib.pyplot as plt
+import re
+import os
+from datetime import datetime
+import numpy as np
+import openai  # For ChatGPT AI agent
 
 # -----------------------
-# PAGE SETUP
+# CONFIGURATION
 # -----------------------
 st.set_page_config(page_title="RBIS CSI Cockpit", layout="wide")
 st.markdown("""
@@ -21,22 +23,24 @@ st.markdown("""
 body {background-color: #0f0f0f; color: #00ff00; font-family: 'Courier New', monospace;}
 .stButton>button {background-color:#111; color:#00ff00;}
 .stTextArea textarea {background-color:#111; color:#00ff00; font-family:'Courier New', monospace;}
+.stFileUploader>div {background-color:#111; color:#00ff00; padding:5px; border-radius:5px;}
+.stMetric {background-color:#111; color:#00ff00; border:1px solid #00ff00; border-radius:5px; padding:5px;}
 </style>
 """, unsafe_allow_html=True)
-
-st.title("RBIS Intelligence Cockpit – Behavioural & Document AI")
-st.write("Upload files (PDF, PNG, JPG, JPEG, MP3/WAV/OPUS) to extract, analyze, and generate intelligence.")
+st.title("RBIS CSI Intelligence Cockpit")
 
 # -----------------------
-# INITIALIZE OCR
+# INITIALIZE MODELS
 # -----------------------
 reader = easyocr.Reader(['en'])
+whisper_model = whisper.load_model("base")
+openai.api_key = st.secrets.get("OPENAI_API_KEY")  # Set your OpenAI API key in Streamlit Secrets
 
 # -----------------------
-# MASTER STORAGE
+# STORAGE
 # -----------------------
-master_index = []
 terminal_logs = []
+intelligence_data = []
 
 # -----------------------
 # FUNCTIONS
@@ -65,46 +69,55 @@ def vocal_tone_score(audio_path=None):
     except:
         return 0, 0
 
-def detect_anomalies(amounts):
-    anomalies = []
-    seen = set()
-    for amt in amounts:
-        if amt in seen:
-            anomalies.append(amt)
+def transcribe_audio(file_path):
+    result = whisper_model.transcribe(file_path)
+    return result['text']
+
+def extract_entities(text):
+    dates = re.findall(r"\d{1,2}/\d{1,2}/\d{4}", text)
+    amounts = re.findall(r"£\d+(?:\.\d{2})?", text)
+    emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
+    phones = re.findall(r"\+?\d[\d -]{7,}\d", text)
+    names = re.findall(r"[A-Z][a-z]+ [A-Z][a-z]+", text)
+    return dates, amounts, names, emails, phones
+
+def ai_agent_query(query, intelligence_data):
+    context = ""
+    for data in intelligence_data:
+        context += f"\nFile: {data['file']}\nText: {data['text']}\nTranscript: {data.get('transcript','')}\n"
+    prompt = f"Based on the following intelligence data, answer the query accurately and concisely:\n{context}\n\nQuery: {query}\nAnswer:"
+    response = openai.Completion.create(
+        model="text-davinci-003",
+        prompt=prompt,
+        temperature=0,
+        max_tokens=500
+    )
+    return response.choices[0].text.strip()
+
+# -----------------------
+# SIDEBAR
+# -----------------------
+with st.sidebar:
+    st.header("Control Panel")
+    uploaded_files = st.file_uploader(
+        "Upload Files (PDF, PNG, JPG, JPEG, MP3/WAV/OPUS)", 
+        accept_multiple_files=True
+    )
+    search_query = st.text_input("Search across files")
+    st.markdown("---")
+    st.subheader("AI Agent")
+    agent_query = st.text_input("Ask the AI about your files:")
+    if agent_query and st.button("Get Intelligence"):
+        if intelligence_data:
+            answer = ai_agent_query(agent_query, intelligence_data)
+            st.markdown(f"<div style='background-color:#111; padding:10px; color:#00ff00;'>{answer}</div>", unsafe_allow_html=True)
         else:
-            seen.add(amt)
-    return anomalies
-
-def fraud_risk_score(text):
-    fraud_keywords = ['fake', 'fraud', 'lie', 'forged', 'tampered']
-    score = 0
-    text_lower = text.lower()
-    for kw in fraud_keywords:
-        if kw in text_lower:
-            score += 20
-    return min(score, 100)
-
-def check_cross_file_anomalies(file_data):
-    anomalies = []
-    for entry in master_index:
-        for amt in file_data['amounts']:
-            if amt in entry['amounts']:
-                anomalies.append(f"Repeated amount: {amt}")
-        for name in file_data['names']:
-            if name not in entry['names']:
-                anomalies.append(f"New name detected: {name}")
-    master_index.append(file_data)
-    return anomalies
+            st.warning("Upload files first!")
 
 # -----------------------
-# FILE UPLOAD
+# FILE PROCESSING
 # -----------------------
-uploaded_files = st.file_uploader(
-    "Upload your files", accept_multiple_files=True, 
-    type=['pdf','png','jpg','jpeg','mp3','wav','opus']
-)
 file_info_list = []
-
 if uploaded_files:
     os.makedirs("temp", exist_ok=True)
     for file in uploaded_files:
@@ -115,15 +128,16 @@ if uploaded_files:
         log(f"Uploaded file: {file.name}")
 
 # -----------------------
-# PROCESS FILES
+# INTELLIGENCE EXTRACTION
 # -----------------------
-intelligence_data = []
-
 for info in file_info_list:
     text_content = ""
-    dates, amounts, names, anomalies, vocal_score, stress_score = [], [], [], [], 0, 0
+    dates, amounts, names, emails, phones = [], [], [], [], []
+    transcript = ""
+    vocal_score, stress_score = 0, 0
+    audio_path = None
 
-    # PDF processing
+    # PDF
     if info['name'].lower().endswith(".pdf"):
         try:
             with pdfplumber.open(info['path']) as pdf:
@@ -140,111 +154,88 @@ for info in file_info_list:
             st.error(f"PDF error: {e}")
             log(f"Error processing PDF: {info['name']}")
 
-    # Image processing
+    # Image
     elif info['name'].lower().endswith((".png", ".jpg", ".jpeg")):
         img = Image.open(info['path'])
         st.image(img, caption=info['name'], use_column_width=True)
         text_content = " ".join(reader.readtext(str(info['path']), detail=0))
         log(f"Processed Image: {info['name']}")
 
-    # Audio processing (WhatsApp .opus)
+    # Audio
     elif info['name'].lower().endswith((".mp3", ".wav", ".opus")):
         audio_path = info['path']
         if info['name'].lower().endswith(".opus"):
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
                 tmp_path = tmp_wav.name
-            try:
-                AudioSegment.from_file(audio_path, format="opus").export(tmp_path, format="wav")
-                audio_path = tmp_path
-            except Exception as e:
-                st.error(f"Failed to convert .opus file: {e}")
+            AudioSegment.from_file(audio_path, format="opus").export(tmp_path, format="wav")
+            audio_path = tmp_path
         vocal_score, stress_score = vocal_tone_score(audio_path)
+        transcript = transcribe_audio(audio_path)
         log(f"Processed Audio: {info['name']}")
 
-    # Extract entities
-    dates = re.findall(r"\d{1,2}/\d{1,2}/\d{4}", text_content)
-    amounts = re.findall(r"£\d+(?:\.\d{2})?", text_content)
-    names = re.findall(r"[A-Z][a-z]+ [A-Z][a-z]+", text_content)
-    anomalies = detect_anomalies(amounts)
+    dates, amounts, names, emails, phones = extract_entities(text_content)
     behavioural = behavioural_score(text_content)
-    fraud_score = fraud_risk_score(text_content)
-    cross_anomalies = check_cross_file_anomalies({
-        "dates": dates,
-        "amounts": amounts,
-        "names": names,
-        "text": text_content
-    })
 
     intelligence_data.append({
         "file": info['name'],
+        "text": text_content,
         "dates": dates,
         "amounts": amounts,
         "names": names,
-        "anomalies": anomalies,
+        "emails": emails,
+        "phones": phones,
         "behavioural": behavioural,
-        "vocal_tone": vocal_score,
+        "vocal_score": vocal_score,
         "stress_score": stress_score,
-        "fraud_score": fraud_score,
-        "cross_anomalies": cross_anomalies,
-        "text": text_content,
-        "audio_path": audio_path if info['name'].lower().endswith((".mp3", ".wav", ".opus")) else None
+        "transcript": transcript,
+        "audio_path": audio_path
     })
 
 # -----------------------
-# DASHBOARD LAYOUT
+# SEARCH RESULTS
 # -----------------------
-left_col, right_col = st.columns([1,3])
-
-with left_col:
-    st.markdown("### Terminal Log")
-    for log_msg in terminal_logs:
-        st.markdown(f"<span style='color:#00ff00'>{log_msg}</span>", unsafe_allow_html=True)
-
-with right_col:
+if search_query:
+    st.subheader(f"Search Results for: {search_query}")
     for data in intelligence_data:
-        with st.expander(f"File: {data['file']}"):
-            tab1, tab2, tab3 = st.tabs(["Behavioural", "Vocal & Audio", "Fraud & OCR"])
-
-            with tab1:
-                st.metric("Behavioural Score", data['behavioural'])
-                st.text_area("Extracted Text", data['text'], height=150)
-
-            with tab2:
-                st.metric("Vocal Tone", data['vocal_tone'])
-                st.metric("Stress", data['stress_score'])
-                if data['audio_path']:
-                    st.audio(data['audio_path'])
-
-            with tab3:
-                st.metric("Fraud Risk Score", data['fraud_score'])
-                st.markdown("### OCR Preview")
-                if data['text']:
-                    st.text_area("OCR Text", data['text'], height=150)
+        matches = []
+        for field in ['names','emails','phones','text','transcript']:
+            if isinstance(data[field], list):
+                matches += [v for v in data[field] if search_query.lower() in str(v).lower()]
+            elif isinstance(data[field], str):
+                if search_query.lower() in data[field].lower():
+                    matches.append(search_query)
+        if matches:
+            st.markdown(f"**{data['file']}**: {matches}")
 
 # -----------------------
-# PDF REPORT
+# DISPLAY INTELLIGENCE
 # -----------------------
-st.subheader("Generate Full Intelligence PDF")
-if st.button("Create PDF Report"):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_fill_color(0, 0, 0)
-    pdf.set_text_color(0, 255, 0)
-    pdf.set_font("Courier", 'B', 18)
-    pdf.cell(0, 12, "RBIS Intelligence Report", ln=True, align="C", fill=True)
-    pdf.ln(8)
-    pdf.set_font("Courier", '', 12)
-    for data in intelligence_data:
-        pdf.multi_cell(0, 6, f"File: {data['file']}")
-        pdf.multi_cell(0, 6, f"Behavioural Score: {data['behavioural']}")
-        pdf.multi_cell(0, 6, f"Vocal Tone: {data['vocal_tone']}")
-        pdf.multi_cell(0, 6, f"Stress: {data['stress_score']}")
-        pdf.multi_cell(0, 6, f"Fraud Risk Score: {data['fraud_score']}")
-        pdf.multi_cell(0, 6, f"Anomalies: {data['anomalies'] if data['anomalies'] else 'None'}")
-        pdf.multi_cell(0, 6, f"Cross-File Anomalies: {data['cross_anomalies'] if data['cross_anomalies'] else 'None'}")
-        pdf.multi_cell(0, 6, "---------------------------------------------")
-    pdf_file = "RBIS_Intelligence_Report.pdf"
-    pdf.output(pdf_file)
-    st.success(f"PDF Report Generated: {pdf_file}")
-    st.download_button("Download PDF", pdf_file)
+for data in intelligence_data:
+    st.markdown("---")
+    st.subheader(f"Intelligence Report – {data['file']}")
+    st.metric("Behavioural Score", data['behavioural'])
+    st.metric("Vocal Tone", data['vocal_score'])
+    st.metric("Stress Score", data['stress_score'])
+    st.write("Extracted Dates:", data['dates'])
+    st.write("Extracted Amounts:", data['amounts'])
+    st.write("Names:", data['names'])
+    st.write("Emails:", data['emails'])
+    st.write("Phones:", data['phones'])
+    if data['audio_path']:
+        st.audio(data['audio_path'])
+        y, sr = librosa.load(data['audio_path'], sr=None)
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
+        S_db = librosa.power_to_db(S, ref=np.max)
+        fig, ax = plt.subplots(figsize=(10,3))
+        librosa.display.specshow(S_db, sr=sr, x_axis='time', y_axis='mel', ax=ax, cmap='magma')
+        ax.set_title('Audio Spectrogram')
+        st.pyplot(fig)
+        st.text_area("Transcript", data['transcript'], height=150)
+
+# -----------------------
+# TERMINAL LOG
+# -----------------------
+st.markdown("---")
+st.subheader("Terminal Log")
+for log_msg in terminal_logs:
+    st.markdown(f"<span style='color:#00ff00'>{log_msg}</span>", unsafe_allow_html=True)
