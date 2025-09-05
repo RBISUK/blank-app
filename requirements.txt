@@ -4,6 +4,4 @@ pdfplumber==0.9.0
 pillow==10.0.0
 pydub==0.25.1
 openai==1.27.4
-torch==2.2.0
-torchaudio==2.2.0
-easyocr==1.7.0
+python-docx==0.8.12
