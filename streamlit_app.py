@@ -6,7 +6,6 @@ from pdf2image import convert_from_bytes
 from pydub import AudioSegment
 import tempfile
 import librosa
-import whisper
 import matplotlib.pyplot as plt
 import numpy as np
 import re
@@ -37,8 +36,7 @@ st.markdown("Upload files, analyze content, extract entities, and generate intel
 # INITIALIZE MODELS
 # -----------------------
 reader = easyocr.Reader(['en'])
-whisper_model = whisper.load_model("base")
-openai.api_key = st.secrets.get("OPENAI_API_KEY")  # Add your OpenAI key in Streamlit secrets
+openai.api_key = st.secrets.get("OPENAI_API_KEY")  # Set your OpenAI key in Streamlit secrets
 
 # -----------------------
 # DATA STORAGE
@@ -84,8 +82,12 @@ def vocal_tone_analysis(audio_path):
 
 def transcribe_audio(file_path):
     try:
-        result = whisper_model.transcribe(file_path)
-        return result['text']
+        with open(file_path, "rb") as audio_file:
+            result = openai.Audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-1"
+            )
+        return result.text
     except Exception as e:
         return f"Transcription failed: {e}"
 
@@ -230,8 +232,8 @@ for data in intelligence_data:
     st.markdown("---")
 
 # -----------------------
-# TERMINAL LOG
+# TERMINAL LOGS (CSI STYLE)
 # -----------------------
-st.subheader("Terminal Log")
-for log_msg in terminal_logs:
-    st.markdown(f"<span style='color:#00ff00'>{log_msg}</span>", unsafe_allow_html=True)
+st.sidebar.subheader("Terminal Logs")
+for line in terminal_logs[-20:]:
+    st.sidebar.markdown(f"`{line}`")
