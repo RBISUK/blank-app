@@ -1,9 +1,11 @@
-streamlit
+streamlit==1.30.0
 easyocr
-Pillow
-torch
-torchvision
-torchaudio
 pdfplumber
 pdf2image
 fpdf
+textblob
+librosa
+numpy
+pandas
+matplotlib
+Pillow
