@@ -10,4 +10,3 @@ matplotlib
 numpy
 openai
 ffmpeg-python
-
