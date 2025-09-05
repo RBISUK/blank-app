@@ -1,11 +1,13 @@
 streamlit
 easyocr
 pdfplumber
-pillow
 pdf2image
+pillow
 pydub
 librosa
 whisper
 matplotlib
-openai
 numpy
+openai
+ffmpeg-python
+
