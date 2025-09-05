@@ -1,192 +1,158 @@
 import streamlit as st
-import pdfplumber
-import docx
-import tempfile
-import os
-import re
-import openai
-import nltk
-from textblob import TextBlob
+from pathlib import Path
 from PIL import Image
+import os
+import io
+import easyocr
+import pdfplumber
+import openai
+from collections import defaultdict
+import re
+import whisper
+from pydub import AudioSegment
 
-# -------------------------------
-# PAGE CONFIG
-# -------------------------------
-st.set_page_config(
-    page_title="🕵️ RydenNet – Behavioural & Intelligence AI Cockpit",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ---------------------------
+# App Setup
+# ---------------------------
+st.set_page_config(page_title="RydenNet – Behavioural & Intelligence AI", layout="wide")
 
-# -------------------------------
-# TERMINAL / CSI STYLE
-# -------------------------------
+# Sidebar style
 st.markdown("""
-<style>
-body, .stApp {
-    background-color: #000000;
-    color: #00FF00;
-}
-.stButton>button {
-    background-color: #222222;
-    color: #00FF00;
-    border-radius:5px;
-}
-.stTextInput>div>div>input {
-    background-color: #111111;
-    color: #00FF00;
-}
-textarea, .stTextArea>div>div>textarea {
-    background-color: #111111;
-    color: #00FF00;
-}
-</style>
+    <style>
+        .sidebar .sidebar-content {
+            background-color: #0b0b0b;
+            color: #00ff00;
+        }
+        .stApp {
+            background-color: #0a0a0a;
+            color: #00ff00;
+        }
+        .stButton>button {
+            background-color: #006400;
+            color: white;
+        }
+        .stTextInput>div>input {
+            background-color: #111;
+            color: #00ff00;
+        }
+    </style>
 """, unsafe_allow_html=True)
 
-st.title("🕵️‍♂️ RydenNet – Behavioural & Intelligence AI Cockpit")
-st.markdown("Upload files, analyze content, extract entities, and generate intelligence.")
+# ---------------------------
+# OpenAI API Key Handling
+# ---------------------------
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_KEY:
+    st.sidebar.error("⚠️ OpenAI API Key not found! Set OPENAI_API_KEY environment variable.")
+else:
+    openai.api_key = OPENAI_KEY
 
-# -------------------------------
-# DOWNLOAD NLP CORPORA
-# -------------------------------
-with st.spinner("Downloading NLP corpora for TextBlob..."):
-    nltk.download('punkt')
-    nltk.download('averaged_perceptron_tagger')
-    nltk.download('brown')
-
-# -------------------------------
-# SIDEBAR UPLOAD + SEARCH
-# -------------------------------
-st.sidebar.header("📂 Upload & Search")
+# ---------------------------
+# Sidebar Uploads & Search
+# ---------------------------
+st.sidebar.header("RydenNet Control Panel")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload files",
-    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
-    accept_multiple_files=True
+    "Upload Documents, Images, or Audio (PDF, PNG, JPG, JPEG, MP3, WAV, OPUS)",
+    accept_multiple_files=True,
+    type=['pdf','png','jpg','jpeg','mp3','wav','opus']
 )
-search_query = st.sidebar.text_input("🔎 Search entities")
 
-# -------------------------------
-# FUNCTIONS
-# -------------------------------
+search_query = st.sidebar.text_input("Search Entities or Keywords")
+
+# ---------------------------
+# Initialize OCR and Whisper
+# ---------------------------
+reader = easyocr.Reader(['en'])
+@st.cache_resource
+def load_whisper():
+    return whisper.load_model("base")
+whisper_model = load_whisper()
+
+# ---------------------------
+# Intelligence Data Storage
+# ---------------------------
+data_store = defaultdict(list)  # Stores extracted text/audio/entities
+
+# ---------------------------
+# Utility Functions
+# ---------------------------
 def extract_text(file):
-    text = ""
-    if file.name.endswith(".pdf"):
+    if file.name.lower().endswith((".png", ".jpg", ".jpeg")):
+        img = Image.open(file)
+        text = " ".join(reader.readtext(np.array(img), detail=0))
+        return text
+    elif file.name.lower().endswith(".pdf"):
+        text = ""
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                text += page.extract_text() or ""
-    elif file.name.endswith(".docx"):
-        doc = docx.Document(file)
-        for para in doc.paragraphs:
-            text += para.text + "\n"
-    elif file.name.lower().endswith((".png", ".jpg", ".jpeg")):
-        import easyocr
-        reader = easyocr.Reader(["en"], gpu=False)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
-            tmp.write(file.read())
-            tmp_path = tmp.name
-        results = reader.readtext(tmp_path, detail=0)
-        os.remove(tmp_path)
-        text = " ".join(results)
+                text += page.extract_text() + "\n"
+        return text
     elif file.name.lower().endswith((".mp3", ".wav", ".opus")):
-        text = transcribe_audio(file)
-    return text
-
-def transcribe_audio(file):
-    try:
-        import whisper
-        with st.spinner("Loading Whisper model..."):
-            model = whisper.load_model("base")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
-            tmp.write(file.read())
-            tmp_path = tmp.name
-        result = model.transcribe(tmp_path)
-        os.remove(tmp_path)
-        return result["text"]
-    except Exception:
-        try:
-            file.seek(0)
-            transcript = openai.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=file
-            )
-            return transcript.text
-        except Exception as e2:
-            return f"⚠️ Audio transcription failed: {e2}"
+        # Convert to WAV if needed
+        audio = AudioSegment.from_file(file)
+        buffer = io.BytesIO()
+        audio.export(buffer, format="wav")
+        buffer.seek(0)
+        result = whisper_model.transcribe(buffer)
+        return result['text']
+    return ""
 
 def extract_entities(text):
-    dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
-    amounts = re.findall(r"£?\d+(?:\.\d{1,2})?", text)
-    emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
-    phones = re.findall(r"\+?\d[\d\s-]{7,}\d", text)
-
-    try:
-        blob = TextBlob(text)
-        names = [word for word, tag in blob.tags if tag in ("NNP", "NNPS")]
-    except Exception:
-        names = []
-
-    return {
-        "Dates": dates,
-        "Finance": amounts,
-        "Persons": names,
-        "Contacts": emails + phones
+    # Simple regex extraction for demo
+    entities = {
+        "Names": re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\b', text),
+        "Emails": re.findall(r'\b[\w\.-]+@[\w\.-]+\b', text),
+        "Phones": re.findall(r'\b(?:\+44\s?|0)\d{10,11}\b', text),
+        "Dates": re.findall(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', text),
+        "Amounts": re.findall(r'£\d+(?:\.\d+)?', text)
     }
+    return entities
 
-def behavioural_score(text):
-    try:
-        blob = TextBlob(text)
-        sentiment = blob.sentiment.polarity
-        score = round((sentiment + 1) * 50, 2)
-        return score, f"Sentiment polarity {sentiment:.2f}"
-    except Exception as e:
-        return 0, f"⚠️ Behavioural analysis failed: {e}"
+def generate_ai_insights(text):
+    if not OPENAI_KEY:
+        return "OpenAI key not set, cannot generate intelligence."
+    prompt = f"Analyze this content and provide behavioral, credibility, and fraud insights:\n\n{text}"
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role":"user","content":prompt}],
+        temperature=0
+    )
+    return response['choices'][0]['message']['content']
 
-# -------------------------------
-# MAIN DASHBOARD
-# -------------------------------
+# ---------------------------
+# Process Files
+# ---------------------------
 if uploaded_files:
     for file in uploaded_files:
-        st.subheader(f"📑 File: {file.name}")
         text_content = extract_text(file)
+        data_store['text'].append({'filename': file.name, 'content': text_content})
+        data_store['entities'].append({'filename': file.name, 'entities': extract_entities(text_content)})
+        data_store['insights'].append({'filename': file.name, 'intelligence': generate_ai_insights(text_content)})
 
-        if not text_content.strip():
-            st.warning("⚠️ No readable content extracted.")
-            continue
+# ---------------------------
+# Search & Display
+# ---------------------------
+st.title("RydenNet – Behavioural & Intelligence AI")
+st.subheader("Upload files, analyze content, extract entities, and generate intelligence.")
 
-        # ENTITY + BEHAVIOUR
-        entities = extract_entities(text_content)
-        behaviour, behaviour_summary = behavioural_score(text_content)
+if uploaded_files:
+    for idx, item in enumerate(data_store['text']):
+        st.markdown(f"### {item['filename']}")
+        st.markdown(f"**Extracted Text:**\n```\n{item['content'][:500]}...\n```")  # Show first 500 chars
+        st.markdown("**Entities:**")
+        entities = data_store['entities'][idx]['entities']
+        for k,v in entities.items():
+            st.markdown(f"{k}: {', '.join(v)}")
+        st.markdown("**Intelligence:**")
+        st.markdown(f"```\n{data_store['insights'][idx]['intelligence']}\n```")
 
-        # SEARCH FILTER
-        if search_query and search_query.lower() not in text_content.lower():
-            st.info(f"Search term '{search_query}' not found in {file.name}.")
-            continue
+        # Highlight search matches
+        if search_query:
+            matches = [line for line in item['content'].splitlines() if search_query.lower() in line.lower()]
+            if matches:
+                st.markdown("**Search Results:**")
+                for m in matches:
+                    st.markdown(f"> {m}")
 
-        # DISPLAY REPORT
-        with st.expander("📜 Full Transcript / Extracted Text", expanded=False):
-            st.text_area("Extracted Text", text_content, height=250)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("### Behavioural & Credibility Analysis")
-            st.write(f"**Behavioural Score:** {behaviour}")
-            st.write(f"**Summary:** {behaviour_summary}")
-
-            st.markdown("### Extracted Entities")
-            for cat, vals in entities.items():
-                st.write(f"**{cat}:** {vals}")
-
-        with col2:
-            st.markdown("### Intelligence Insights")
-            try:
-                insights = openai.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are an intelligence analyst. Categorise names, places, organisations, and financial figures. Identify credibility issues or anomalies."},
-                        {"role": "user", "content": text_content[:4000]}
-                    ]
-                )
-                st.write(insights.choices[0].message.content)
-            except Exception as e:
-                st.error(f"⚠️ Intelligence generation failed: {e}")
+else:
+    st.write("Upload files using the sidebar to begin analysis.")
