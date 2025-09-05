@@ -4,9 +4,10 @@ import docx
 import tempfile
 import os
 import re
-from textblob import TextBlob
-import pandas as pd
 import openai
+import nltk
+from textblob import TextBlob
+from PIL import Image
 
 # -------------------------------
 # PAGE CONFIG
@@ -17,11 +18,44 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# -------------------------------
+# TERMINAL / CSI STYLE
+# -------------------------------
+st.markdown("""
+<style>
+body, .stApp {
+    background-color: #000000;
+    color: #00FF00;
+}
+.stButton>button {
+    background-color: #222222;
+    color: #00FF00;
+    border-radius:5px;
+}
+.stTextInput>div>div>input {
+    background-color: #111111;
+    color: #00FF00;
+}
+textarea, .stTextArea>div>div>textarea {
+    background-color: #111111;
+    color: #00FF00;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🕵️‍♂️ RydenNet – Behavioural & Intelligence AI Cockpit")
 st.markdown("Upload files, analyze content, extract entities, and generate intelligence.")
 
 # -------------------------------
-# SIDEBAR UPLOAD & SEARCH
+# DOWNLOAD NLP CORPORA
+# -------------------------------
+with st.spinner("Downloading NLP corpora for TextBlob..."):
+    nltk.download('punkt')
+    nltk.download('averaged_perceptron_tagger')
+    nltk.download('brown')
+
+# -------------------------------
+# SIDEBAR UPLOAD + SEARCH
 # -------------------------------
 st.sidebar.header("📂 Upload & Search")
 uploaded_files = st.sidebar.file_uploader(
@@ -32,7 +66,7 @@ uploaded_files = st.sidebar.file_uploader(
 search_query = st.sidebar.text_input("🔎 Search entities")
 
 # -------------------------------
-# FUNCTION: EXTRACT TEXT
+# FUNCTIONS
 # -------------------------------
 def extract_text(file):
     text = ""
@@ -57,9 +91,6 @@ def extract_text(file):
         text = transcribe_audio(file)
     return text
 
-# -------------------------------
-# FUNCTION: AUDIO TRANSCRIPTION
-# -------------------------------
 def transcribe_audio(file):
     try:
         import whisper
@@ -82,17 +113,17 @@ def transcribe_audio(file):
         except Exception as e2:
             return f"⚠️ Audio transcription failed: {e2}"
 
-# -------------------------------
-# FUNCTION: EXTRACT ENTITIES
-# -------------------------------
 def extract_entities(text):
     dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
     amounts = re.findall(r"£?\d+(?:\.\d{1,2})?", text)
     emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
     phones = re.findall(r"\+?\d[\d\s-]{7,}\d", text)
 
-    blob = TextBlob(text)
-    names = [word for word, tag in blob.tags if tag in ("NNP", "NNPS")]
+    try:
+        blob = TextBlob(text)
+        names = [word for word, tag in blob.tags if tag in ("NNP", "NNPS")]
+    except Exception:
+        names = []
 
     return {
         "Dates": dates,
@@ -101,9 +132,6 @@ def extract_entities(text):
         "Contacts": emails + phones
     }
 
-# -------------------------------
-# FUNCTION: BEHAVIOURAL SCORE
-# -------------------------------
 def behavioural_score(text):
     try:
         blob = TextBlob(text)
@@ -125,14 +153,14 @@ if uploaded_files:
             st.warning("⚠️ No readable content extracted.")
             continue
 
+        # ENTITY + BEHAVIOUR
         entities = extract_entities(text_content)
         behaviour, behaviour_summary = behavioural_score(text_content)
 
         # SEARCH FILTER
-        if search_query:
-            if search_query.lower() not in text_content.lower():
-                st.info(f"Search term '{search_query}' not found in {file.name}.")
-                continue
+        if search_query and search_query.lower() not in text_content.lower():
+            st.info(f"Search term '{search_query}' not found in {file.name}.")
+            continue
 
         # DISPLAY REPORT
         with st.expander("📜 Full Transcript / Extracted Text", expanded=False):
