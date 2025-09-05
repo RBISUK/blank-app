@@ -1,9 +1,7 @@
 streamlit==1.30.0
-Pillow
-easyocr
+pillow
 pdfplumber
-openai
-whisper
+pytesseract
 pydub
+openai
 numpy
-torch
