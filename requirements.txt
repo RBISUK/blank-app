@@ -5,7 +5,6 @@ pdf2image
 pillow
 pydub
 librosa
-whisper
 matplotlib
 numpy
 openai
