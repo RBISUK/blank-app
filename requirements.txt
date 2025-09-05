@@ -1,11 +1,12 @@
+pydub
+ffmpeg-python
+librosa
+numpy
+pandas
+matplotlib
 streamlit==1.30.0
 easyocr
 pdfplumber
 pdf2image
 fpdf
-textblob
-librosa
-numpy
-pandas
-matplotlib
 Pillow
