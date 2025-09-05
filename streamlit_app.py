@@ -10,11 +10,11 @@ import io
 
 st.set_page_config(page_title="RydenNet", layout="wide")
 
-# Sidebar style
+# UI styling
 st.markdown("""
     <style>
-        .sidebar .sidebar-content {background-color: #0b0b0b; color: #00ff00;}
-        .stApp {background-color: #0a0a0a; color: #00ff00;}
+        .stApp {background-color: #ffffff; color: #000000;}
+        .stSidebar .sidebar-content {background-color: #f0f0f0; color: #000000;}
         .stButton>button {background-color: #006400; color:white;}
     </style>
 """, unsafe_allow_html=True)
@@ -24,9 +24,9 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_KEY:
     openai.api_key = OPENAI_KEY
 else:
-    st.sidebar.error("⚠️ Set OPENAI_API_KEY environment variable.")
+    st.sidebar.warning("⚠️ Set OPENAI_API_KEY environment variable.")
 
-# Upload
+# File upload
 uploaded_files = st.sidebar.file_uploader("Upload PDF/Images/Audio", accept_multiple_files=True,
                                           type=['pdf','png','jpg','jpeg','mp3','wav','opus'])
 
@@ -35,23 +35,29 @@ search_query = st.sidebar.text_input("Search Text/Entities")
 data_store = []
 
 def extract_text(file):
-    if file.name.lower().endswith((".png",".jpg",".jpeg")):
-        img = Image.open(file)
-        text = pytesseract.image_to_string(img)
-        return text
-    elif file.name.lower().endswith(".pdf"):
-        text = ""
-        with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
-                text += page.extract_text() + "\n"
-        return text
-    elif file.name.lower().endswith((".mp3",".wav",".opus")):
-        # convert to wav
-        audio = AudioSegment.from_file(file)
-        buf = io.BytesIO()
-        audio.export(buf, format="wav")
-        buf.seek(0)
-        return "Audio transcription placeholder (Whisper to be added)"
+    try:
+        if file.name.lower().endswith((".png",".jpg",".jpeg")):
+            img = Image.open(file)
+            text = pytesseract.image_to_string(img)
+            return text
+        elif file.name.lower().endswith(".pdf"):
+            text = ""
+            with pdfplumber.open(file) as pdf:
+                for page in pdf.pages:
+                    text += page.extract_text() + "\n"
+            return text
+        elif file.name.lower().endswith((".mp3",".wav",".opus")):
+            # Convert audio to wav in-memory
+            try:
+                audio = AudioSegment.from_file(file)
+                buf = io.BytesIO()
+                audio.export(buf, format="wav")
+                buf.seek(0)
+                return "Audio transcription placeholder (Whisper to be added)"
+            except FileNotFoundError:
+                return "⚠️ Audio processing failed: ffmpeg not found"
+    except Exception as e:
+        return f"⚠️ Failed to extract text: {e}"
     return ""
 
 def extract_entities(text):
