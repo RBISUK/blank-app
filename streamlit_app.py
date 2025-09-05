@@ -3,15 +3,15 @@ from PIL import Image
 import easyocr
 import pdfplumber
 from pdf2image import convert_from_bytes
-import re
 from fpdf import FPDF
 from datetime import datetime
 from textblob import TextBlob
 import librosa
 import numpy as np
-import os
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import re
 
 # -----------------------
 # PAGE SETUP
