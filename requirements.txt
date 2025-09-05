@@ -8,3 +8,5 @@ torch
 numpy
 openai>=1.0.0
 whisper
+ffmpeg-python
+textblob
