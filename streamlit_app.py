@@ -1,149 +1,169 @@
 import streamlit as st
 import pdfplumber
 import docx
-import os
-import tempfile
-import openai
-import re
 import easyocr
-from PIL import Image
-import whisper
+import tempfile
+import os
+import re
 import pandas as pd
+import openai
+from textblob import TextBlob
 
 # -------------------------------
-# CONFIG
+# APP CONFIG
 # -------------------------------
 st.set_page_config(
-    page_title="RydenNet – Master AI",
+    page_title="🕵️ RydenNet – Behavioural & Intelligence AI Cockpit",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 st.title("🕵️‍♂️ RydenNet – Behavioural & Intelligence AI Cockpit")
+st.markdown("Upload files, analyze content, extract entities, and generate intelligence.")
 
-# Sidebar Upload
-st.sidebar.header("📂 Upload Files")
-uploaded_files = st.sidebar.file_uploader(
-    "Upload PDFs, Word docs, Images, or Audio",
-    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
-    accept_multiple_files=True
-)
-
-# Whisper model for audio
-@st.cache_resource
-def load_whisper():
-    return whisper.load_model("base")
-
-whisper_model = load_whisper()
-
-# EasyOCR
-reader = easyocr.Reader(["en"])
 
 # -------------------------------
-# TEXT EXTRACTION
+# FILE PROCESSING
 # -------------------------------
 def extract_text(file):
     text = ""
     if file.name.endswith(".pdf"):
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                text += page.extract_text() + "\n"
+                text += page.extract_text() or ""
     elif file.name.endswith(".docx"):
         doc = docx.Document(file)
         for para in doc.paragraphs:
             text += para.text + "\n"
-    elif file.name.endswith((".png", ".jpg", ".jpeg")):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            tmp.write(file.read())
-            tmp_path = tmp.name
-        text = " ".join(reader.readtext(tmp_path, detail=0))
-        os.remove(tmp_path)
-    elif file.name.endswith((".mp3", ".wav", ".opus")):
+    elif file.name.lower().endswith((".png", ".jpg", ".jpeg")):
+        reader = easyocr.Reader(["en"], gpu=False)
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
             tmp.write(file.read())
             tmp_path = tmp.name
-        result = whisper_model.transcribe(tmp_path)
-        text = result["text"]
+        results = reader.readtext(tmp_path, detail=0)
         os.remove(tmp_path)
-    return text.strip()
+        text = " ".join(results)
+    elif file.name.lower().endswith((".mp3", ".wav", ".opus")):
+        text = transcribe_audio(file)
+    return text
+
 
 # -------------------------------
-# ENTITY EXTRACTION
+# AUDIO TRANSCRIPTION
+# -------------------------------
+def transcribe_audio(file):
+    try:
+        import whisper
+        model = whisper.load_model("base")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file.name) as tmp:
+            tmp.write(file.read())
+            tmp_path = tmp.name
+        result = model.transcribe(tmp_path)
+        os.remove(tmp_path)
+        return result["text"]
+    except Exception:
+        try:
+            file.seek(0)
+            transcript = openai.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=file
+            )
+            return transcript.text
+        except Exception as e2:
+            return f"⚠️ Audio transcription failed: {e2}"
+
+
+# -------------------------------
+# ENTITY EXTRACTION + CATEGORISATION
 # -------------------------------
 def extract_entities(text):
-    dates = re.findall(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", text)
-    amounts = re.findall(r"£\d+(?:,\d{3})*(?:\.\d{2})?", text)
+    dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
+    amounts = re.findall(r"£?\d+(?:\.\d{1,2})?", text)
     emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
-    phones = re.findall(r"\+?\d[\d\-\s]{7,}\d", text)
-    names = re.findall(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b", text)
-    return dates, amounts, names, emails, phones
+    phones = re.findall(r"\+?\d[\d\s-]{7,}\d", text)
+
+    blob = TextBlob(text)
+    names = [word for word, tag in blob.tags if tag in ("NNP", "NNPS")]
+
+    return {
+        "Dates": dates,
+        "Finance": amounts,
+        "Persons": names,
+        "Contacts": emails + phones
+    }
+
 
 # -------------------------------
-# BEHAVIOURAL & CREDIBILITY AI
+# BEHAVIOURAL ANALYSIS
 # -------------------------------
-def behavioural_analysis(text):
-    prompt = f"""
-    You are a behavioural intelligence analyst. 
-    Analyse the following text for:
-    - Emotional tone
-    - Credibility markers
-    - Signs of exaggeration or manipulation
-    - Overall behavioural risk score (0–100)
-
-    Text:
-    {text[:2000]}  # limit text
-    """
+def behavioural_score(text):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are an expert in behavioural analysis."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            max_tokens=400
-        )
-        return response.choices[0].message.content.strip()
+        blob = TextBlob(text)
+        sentiment = blob.sentiment.polarity
+        score = round((sentiment + 1) * 50, 2)
+        return score, f"Sentiment polarity {sentiment:.2f}"
     except Exception as e:
-        return f"⚠️ Behavioural analysis failed: {e}"
+        return 0, f"⚠️ Behavioural analysis failed: {e}"
+
 
 # -------------------------------
-# MAIN UI
+# SIDEBAR
+# -------------------------------
+st.sidebar.header("📂 Upload & Search")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload files",
+    type=["pdf", "docx", "png", "jpg", "jpeg", "mp3", "wav", "opus"],
+    accept_multiple_files=True
+)
+search_query = st.sidebar.text_input("🔎 Search entities")
+
+
+# -------------------------------
+# MAIN INTELLIGENCE ENGINE
 # -------------------------------
 if uploaded_files:
     for file in uploaded_files:
-        st.subheader(f"📄 File: {file.name}")
+        st.subheader(f"📑 File: {file.name}")
         text_content = extract_text(file)
 
-        if not text_content:
-            st.warning("No text could be extracted.")
+        if not text_content.strip():
+            st.warning("⚠️ No readable content extracted.")
             continue
 
-        st.markdown("### 🔎 Extracted Text")
-        st.text_area("Raw Content", text_content[:3000], height=200)
+        entities = extract_entities(text_content)
+        behaviour, behaviour_summary = behavioural_score(text_content)
 
-        # Entities
-        dates, amounts, names, emails, phones = extract_entities(text_content)
+        # Search filter
+        if search_query:
+            if search_query.lower() not in text_content.lower():
+                st.info(f"Search term '{search_query}' not found in {file.name}.")
+                continue
 
-        col1, col2, col3 = st.columns(3)
+        # Display report
+        with st.expander("📜 Full Transcript / Extracted Text", expanded=False):
+            st.text_area("Extracted Text", text_content, height=200)
+
+        col1, col2 = st.columns(2)
+
         with col1:
-            st.markdown("**📅 Dates:**")
-            st.write(dates if dates else "None")
-            st.markdown("**💷 Amounts:**")
-            st.write(amounts if amounts else "None")
+            st.markdown("### Behavioural & Credibility Analysis")
+            st.write(f"**Behavioural Score:** {behaviour}")
+            st.write(f"**Summary:** {behaviour_summary}")
+
+            st.markdown("### Extracted Entities")
+            for cat, vals in entities.items():
+                st.write(f"**{cat}:** {vals}")
+
         with col2:
-            st.markdown("**👤 Names:**")
-            st.write(names if names else "None")
-        with col3:
-            st.markdown("**📧 Emails:**")
-            st.write(emails if emails else "None")
-            st.markdown("**📞 Phones:**")
-            st.write(phones if phones else "None")
-
-        # Behavioural Intelligence
-        st.markdown("### 🧠 Behavioural & Credibility Analysis")
-        behavioural = behavioural_analysis(text_content)
-        st.write(behavioural)
-
-else:
-    st.info("Upload files from the sidebar to begin.")
+            st.markdown("### Intelligence Insights")
+            try:
+                insights = openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are an intelligence analyst. Categorise names, places, organisations, and financial figures. Identify credibility issues or anomalies."},
+                        {"role": "user", "content": text_content[:4000]}
+                    ]
+                )
+                st.write(insights.choices[0].message.content)
+            except Exception as e:
+                st.error(f"⚠️ Intelligence generation failed: {e}")
