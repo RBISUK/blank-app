@@ -1,66 +1,107 @@
+# streamlit_app.py
 import streamlit as st
 import pdfplumber
-from docx import Document
+import docx
+import os
+from PIL import Image
+import easyocr
+from pydub import AudioSegment
+import whisper
 import re
 
-# Page setup
-st.set_page_config(page_title="RydenNet Intelligence", layout="wide")
-st.markdown(
-    """
-    <style>
-    body {background-color: #f0f0f0; color: #111;}
-    .stTextArea textarea {background-color: #fff; color: #000;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-st.title("RydenNet – Behavioural & Intelligence AI")
+# ------------------ UI & Layout ------------------
+st.set_page_config(page_title="RydenNet Intelligence Cockpit", layout="wide")
 
 # Sidebar
-with st.sidebar:
-    st.header("Upload Files")
-    uploaded_files = st.file_uploader(
-        "PDF, DOCX, TXT", type=["pdf", "docx", "txt"], accept_multiple_files=True
-    )
+st.sidebar.title("RydenNet Cockpit")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload files (PDF, DOCX, TXT, PNG, JPG, JPEG, MP3, WAV, OPUS)", 
+    type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "mp3", "wav", "opus"], 
+    accept_multiple_files=True
+)
+search_query = st.sidebar.text_input("Search uploaded content...")
 
-    st.header("Search Text/Entities")
-    search_query = st.text_input("Enter keyword, email, phone number...")
-
-# Functions
+# ------------------ Helpers ------------------
 def extract_text(file):
-    try:
-        if file.type == "application/pdf":
-            with pdfplumber.open(file) as pdf:
-                return "\n".join(page.extract_text() or "" for page in pdf.pages)
-        elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            doc = Document(file)
-            return "\n".join(p.text for p in doc.paragraphs)
-        elif file.type == "text/plain":
-            return file.read().decode("utf-8")
-        else:
-            return ""
-    except Exception as e:
-        st.error(f"Failed to extract text from {file.name}: {e}")
-        return ""
+    text_content = ""
+    name = file.name.lower()
+    if name.endswith(".pdf"):
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                text_content += page.extract_text() + "\n"
+    elif name.endswith(".docx"):
+        doc = docx.Document(file)
+        for para in doc.paragraphs:
+            text_content += para.text + "\n"
+    elif name.endswith(".txt"):
+        text_content += file.read().decode("utf-8")
+    elif name.endswith((".mp3", ".wav", ".opus")):
+        try:
+            audio = AudioSegment.from_file(file)
+            audio.export("temp.wav", format="wav")
+            whisper_model = whisper.load_model("base")
+            result = whisper_model.transcribe("temp.wav")
+            text_content += result["text"]
+            os.remove("temp.wav")
+        except Exception as e:
+            st.error(f"Audio processing failed: {e}")
+    return text_content
 
-def find_entities(text):
-    emails = re.findall(r"\b[\w.-]+?@\w+?\.\w+?\b", text)
-    phones = re.findall(r"\b\d{10,15}\b", text)
-    return emails, phones
+# EasyOCR setup
+reader = easyocr.Reader(["en"], gpu=False)
 
-# Main display
+def extract_entities(text):
+    emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
+    phones = re.findall(r"\+?\d[\d -]{8,}\d", text)
+    dates = re.findall(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", text)
+    amounts = re.findall(r"£\d+[.,]?\d*", text)
+    return {"emails": emails, "phones": phones, "dates": dates, "amounts": amounts}
+
+# ------------------ Main Display ------------------
+st.title("RydenNet Intelligence Cockpit")
+st.markdown(
+    """
+    Upload files, analyze content, extract entities, and generate intelligence.
+    """
+)
+
+# Process uploaded files
+all_text = ""
+file_entities = {}
 if uploaded_files:
     for file in uploaded_files:
         st.subheader(f"File: {file.name}")
-        text_content = extract_text(file)
-        st.text_area("Extracted Text", text_content, height=300)
+        if file.name.lower().endswith((".png", ".jpg", ".jpeg")):
+            img = Image.open(file)
+            st.image(img, caption=file.name, use_column_width=True)
+            ocr_text = " ".join(reader.readtext(file, detail=0))
+            st.text_area("OCR Extracted Text", ocr_text, height=150)
+            all_text += ocr_text + "\n"
+        else:
+            text_content = extract_text(file)
+            st.text_area("Extracted Text", text_content, height=150)
+            all_text += text_content + "\n"
 
-        emails, phones = find_entities(text_content)
-        st.write("Extracted Emails:", emails or "None")
-        st.write("Extracted Phone Numbers:", phones or "None")
+        file_entities[file.name] = extract_entities(all_text)
 
-        if search_query:
-            matches = [line for line in text_content.splitlines() if search_query.lower() in line.lower()]
-            st.write(f"Search Results for '{search_query}':", matches or "No matches found")
-else:
-    st.info("Upload files using the sidebar to extract text and search for entities.")
+# ------------------ Search Function ------------------
+if search_query:
+    st.subheader("Search Results")
+    matches = [line for line in all_text.split("\n") if search_query.lower() in line.lower()]
+    if matches:
+        for m in matches:
+            st.write(f"- {m}")
+    else:
+        st.write("No matches found.")
+
+# ------------------ Intelligence Summary ------------------
+st.subheader("Entity Summary")
+for fname, entities in file_entities.items():
+    st.markdown(f"**{fname}**")
+    st.write("Emails:", entities["emails"])
+    st.write("Phones:", entities["phones"])
+    st.write("Dates:", entities["dates"])
+    st.write("Amounts:", entities["amounts"])
+
+st.markdown("---")
+st.info("Behavioural and AI intelligence modules are under development for credibility, tone, and fraud detection.")
