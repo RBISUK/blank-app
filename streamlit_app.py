@@ -5,18 +5,17 @@ import pdfplumber
 from pdf2image import convert_from_bytes
 from fpdf import FPDF
 from datetime import datetime
-from textblob import TextBlob
-import librosa
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import os
 import re
+import numpy as np
+from pydub import AudioSegment
+import tempfile
+import librosa
 
 # -----------------------
 # PAGE SETUP
 # -----------------------
-st.set_page_config(page_title="RBIS Intelligence Cockpit", layout="wide")
+st.set_page_config(page_title="RBIS CSI Cockpit", layout="wide")
 st.markdown("""
 <style>
 body {background-color: #0f0f0f; color: #00ff00; font-family: 'Courier New', monospace;}
@@ -26,7 +25,7 @@ body {background-color: #0f0f0f; color: #00ff00; font-family: 'Courier New', mon
 """, unsafe_allow_html=True)
 
 st.title("RBIS Intelligence Cockpit – Behavioural & Document AI")
-st.write("Upload files (PDF, PNG, JPG, JPEG, MP3/WAV) to extract, analyze, and generate intelligence.")
+st.write("Upload files (PDF, PNG, JPG, JPEG, MP3/WAV/OPUS) to extract, analyze, and generate intelligence.")
 
 # -----------------------
 # INITIALIZE OCR
@@ -34,21 +33,26 @@ st.write("Upload files (PDF, PNG, JPG, JPEG, MP3/WAV) to extract, analyze, and g
 reader = easyocr.Reader(['en'])
 
 # -----------------------
-# MASTER DATA STORAGE
+# MASTER STORAGE
 # -----------------------
 master_index = []
+terminal_logs = []
 
 # -----------------------
 # FUNCTIONS
 # -----------------------
+def log(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    terminal_logs.append(f"[{timestamp}] {msg}")
+
 def behavioural_score(text):
     uncertainty_words = ['maybe', 'possibly', 'uncertain', 'believe', 'guess']
     score = 100
-    blob = TextBlob(text.lower())
+    text_lower = text.lower()
     for word in uncertainty_words:
-        if word in blob.words:
+        if word in text_lower.split():
             score -= 5
-    return max(score, 0)
+    return max(score,0)
 
 def vocal_tone_score(audio_path=None):
     try:
@@ -95,7 +99,10 @@ def check_cross_file_anomalies(file_data):
 # -----------------------
 # FILE UPLOAD
 # -----------------------
-uploaded_files = st.file_uploader("Upload your files", accept_multiple_files=True, type=['pdf','png','jpg','jpeg','mp3','wav'])
+uploaded_files = st.file_uploader(
+    "Upload your files", accept_multiple_files=True, 
+    type=['pdf','png','jpg','jpeg','mp3','wav','opus']
+)
 file_info_list = []
 
 if uploaded_files:
@@ -105,9 +112,10 @@ if uploaded_files:
         with open(path, "wb") as f:
             f.write(file.getbuffer())
         file_info_list.append({"name": file.name, "path": path})
+        log(f"Uploaded file: {file.name}")
 
 # -----------------------
-# INTELLIGENCE PROCESSING
+# PROCESS FILES
 # -----------------------
 intelligence_data = []
 
@@ -127,18 +135,31 @@ for info in file_info_list:
                 images = convert_from_bytes(open(info['path'], 'rb').read())
                 for img in images:
                     text_content += " ".join(reader.readtext(img, detail=0)) + "\n"
+            log(f"Processed PDF: {info['name']}")
         except Exception as e:
             st.error(f"PDF error: {e}")
+            log(f"Error processing PDF: {info['name']}")
 
     # Image processing
     elif info['name'].lower().endswith((".png", ".jpg", ".jpeg")):
         img = Image.open(info['path'])
         st.image(img, caption=info['name'], use_column_width=True)
         text_content = " ".join(reader.readtext(str(info['path']), detail=0))
+        log(f"Processed Image: {info['name']}")
 
-    # Audio processing
-    elif info['name'].lower().endswith((".mp3",".wav")):
-        vocal_score, stress_score = vocal_tone_score(info['path'])
+    # Audio processing (WhatsApp .opus)
+    elif info['name'].lower().endswith((".mp3", ".wav", ".opus")):
+        audio_path = info['path']
+        if info['name'].lower().endswith(".opus"):
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+                tmp_path = tmp_wav.name
+            try:
+                AudioSegment.from_file(audio_path, format="opus").export(tmp_path, format="wav")
+                audio_path = tmp_path
+            except Exception as e:
+                st.error(f"Failed to convert .opus file: {e}")
+        vocal_score, stress_score = vocal_tone_score(audio_path)
+        log(f"Processed Audio: {info['name']}")
 
     # Extract entities
     dates = re.findall(r"\d{1,2}/\d{1,2}/\d{4}", text_content)
@@ -165,45 +186,43 @@ for info in file_info_list:
         "stress_score": stress_score,
         "fraud_score": fraud_score,
         "cross_anomalies": cross_anomalies,
-        "text": text_content
+        "text": text_content,
+        "audio_path": audio_path if info['name'].lower().endswith((".mp3", ".wav", ".opus")) else None
     })
 
 # -----------------------
-# INTERACTIVE DASHBOARD
+# DASHBOARD LAYOUT
 # -----------------------
-st.subheader("Futuristic CSI Terminal")
-for data in intelligence_data:
-    with st.expander(f"File: {data['file']}"):
-        st.markdown(f"**Dates:** {', '.join(data['dates']) if data['dates'] else 'None'}")
-        st.markdown(f"**Amounts (Anomalies in red):**")
-        for amt in data['amounts']:
-            if amt in data['anomalies'] or any(f"Repeated amount: {amt}" in a for a in data['cross_anomalies']):
-                st.markdown(f"<span style='color:red'>{amt}</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<span style='color:#00ff00'>{amt}</span>", unsafe_allow_html=True)
-        st.markdown(f"**Names:** {', '.join(data['names']) if data['names'] else 'None'}")
-        st.markdown(f"**Behavioural Score:** {data['behavioural']}/100")
-        st.markdown(f"**Vocal Tone Score:** {data['vocal_tone']}/100")
-        st.markdown(f"**Stress Score:** {data['stress_score']}/100")
-        st.markdown(f"**Fraud Risk Score:** {data['fraud_score']}/100")
-        st.markdown(f"**Cross-file Anomalies:** {', '.join(data['cross_anomalies']) if data['cross_anomalies'] else 'None'}")
-        st.text_area("Raw Extracted Text", data['text'], height=150)
+left_col, right_col = st.columns([1,3])
 
-# -----------------------
-# ANALYTICS CHARTS
-# -----------------------
-if intelligence_data:
-    st.subheader("Analytics Dashboard")
-    all_amounts = []
+with left_col:
+    st.markdown("### Terminal Log")
+    for log_msg in terminal_logs:
+        st.markdown(f"<span style='color:#00ff00'>{log_msg}</span>", unsafe_allow_html=True)
+
+with right_col:
     for data in intelligence_data:
-        for amt in data['amounts']:
-            all_amounts.append(float(amt.replace("£","")))
-    if all_amounts:
-        df = pd.DataFrame({"Amounts": all_amounts})
-        st.bar_chart(df)
+        with st.expander(f"File: {data['file']}"):
+            tab1, tab2, tab3 = st.tabs(["Behavioural", "Vocal & Audio", "Fraud & OCR"])
+
+            with tab1:
+                st.metric("Behavioural Score", data['behavioural'])
+                st.text_area("Extracted Text", data['text'], height=150)
+
+            with tab2:
+                st.metric("Vocal Tone", data['vocal_tone'])
+                st.metric("Stress", data['stress_score'])
+                if data['audio_path']:
+                    st.audio(data['audio_path'])
+
+            with tab3:
+                st.metric("Fraud Risk Score", data['fraud_score'])
+                st.markdown("### OCR Preview")
+                if data['text']:
+                    st.text_area("OCR Text", data['text'], height=150)
 
 # -----------------------
-# PDF REPORT GENERATION
+# PDF REPORT
 # -----------------------
 st.subheader("Generate Full Intelligence PDF")
 if st.button("Create PDF Report"):
@@ -215,43 +234,17 @@ if st.button("Create PDF Report"):
     pdf.set_font("Courier", 'B', 18)
     pdf.cell(0, 12, "RBIS Intelligence Report", ln=True, align="C", fill=True)
     pdf.ln(8)
-    pdf.set_font("Courier", '', 10)
-    pdf.cell(0, 8, f"Generated: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", ln=True)
-    pdf.ln(5)
-
+    pdf.set_font("Courier", '', 12)
     for data in intelligence_data:
-        pdf.set_fill_color(20, 20, 20)
-        pdf.set_text_color(0, 255, 0)
-        pdf.set_font("Courier", 'B', 14)
-        pdf.cell(0, 10, f"File: {data['file']}", ln=True, fill=True)
-        pdf.ln(2)
-
-        pdf.set_font("Courier", '', 12)
-        pdf.multi_cell(0, 8, f"Dates: {', '.join(data['dates']) if data['dates'] else 'None'}")
-
-        amounts_str = ""
-        for amt in data['amounts']:
-            if amt in data['anomalies'] or any(f"Repeated amount: {amt}" in a for a in data['cross_anomalies']):
-                amounts_str += f"[!]{amt} "
-            else:
-                amounts_str += f"{amt} "
-        pdf.set_text_color(255, 0, 0)
-        pdf.multi_cell(0, 8, f"Amounts (Anomalies in red): {amounts_str.strip()}")
-        pdf.set_text_color(0, 255, 0)
-
-        pdf.multi_cell(0, 8, f"Names: {', '.join(data['names']) if data['names'] else 'None'}")
-        pdf.multi_cell(0, 8, f"Behavioural Score: {data['behavioural']}/100")
-        pdf.multi_cell(0, 8, f"Vocal Tone Score: {data['vocal_tone']}/100")
-        pdf.multi_cell(0, 8, f"Stress Score: {data['stress_score']}/100")
-        pdf.multi_cell(0, 8, f"Fraud Risk Score: {data['fraud_score']}/100")
-        pdf.multi_cell(0, 8, f"Cross-file Anomalies: {', '.join(data['cross_anomalies']) if data['cross_anomalies'] else 'None'}")
-        pdf.ln(5)
-
-    pdf_bytes = pdf.output(dest='S').encode('latin1')
-    st.download_button(
-        label="Download Full Intelligence PDF",
-        data=pdf_bytes,
-        file_name="RBIS_Futuristic_Intelligence_Report.pdf",
-        mime="application/pdf"
-    )
-    st.success("Full Intelligence PDF generated!")
+        pdf.multi_cell(0, 6, f"File: {data['file']}")
+        pdf.multi_cell(0, 6, f"Behavioural Score: {data['behavioural']}")
+        pdf.multi_cell(0, 6, f"Vocal Tone: {data['vocal_tone']}")
+        pdf.multi_cell(0, 6, f"Stress: {data['stress_score']}")
+        pdf.multi_cell(0, 6, f"Fraud Risk Score: {data['fraud_score']}")
+        pdf.multi_cell(0, 6, f"Anomalies: {data['anomalies'] if data['anomalies'] else 'None'}")
+        pdf.multi_cell(0, 6, f"Cross-File Anomalies: {data['cross_anomalies'] if data['cross_anomalies'] else 'None'}")
+        pdf.multi_cell(0, 6, "---------------------------------------------")
+    pdf_file = "RBIS_Intelligence_Report.pdf"
+    pdf.output(pdf_file)
+    st.success(f"PDF Report Generated: {pdf_file}")
+    st.download_button("Download PDF", pdf_file)
